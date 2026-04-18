@@ -14,6 +14,7 @@ Architecture:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,45 @@ from src.algorithms.base import BaseAlgorithm, TrainingState
 from src.algorithms.utils import last_episode_return
 from src.networks.factory import make_network
 from src.trainer import TrainerEvent, fire_callbacks
+
+
+@dataclass
+class DQNConfig:
+    """Hyperparameters for DQN with double-DQN target network and epsilon-greedy exploration.
+
+    Defaults are tuned for CartPole-v1 (MLP network).
+    For Atari pixel environments, override ``network`` to ``cnn_atari`` and increase
+    ``replay_buffer.capacity``, ``init_random_frames``, and ``eps_annealing_frames``.
+    """
+
+    # Data collection
+    frames_per_batch: int = 200       # frames added to replay buffer per collector step
+    init_random_frames: int = 5_000   # warm-up frames collected with random policy before training starts
+
+    # Replay buffer
+    replay_buffer: dict = field(default_factory=lambda: {
+        "capacity": 100_000,   # maximum number of transitions stored
+        "batch_size": 128,     # number of transitions sampled per gradient update
+    })
+
+    # Optimization
+    lr: float = 1e-4                   # Adam learning rate
+    gamma: float = 0.99                # discount factor
+    max_grad_norm: float = 10.0        # gradient clipping threshold
+    target_update_every: int = 1_000   # hard-copy target network every N environment frames
+
+    # Exploration — epsilon-greedy annealing schedule
+    eps_start: float = 1.0             # initial exploration probability
+    eps_end: float = 0.05              # final exploration probability
+    eps_annealing_frames: int = 100_000  # frames over which epsilon is linearly annealed
+
+    # Network architecture (MLP for CartPole; override to cnn_atari for Atari)
+    network: dict = field(default_factory=lambda: {
+        "architecture": "mlp",
+        "hidden_sizes": [128, 128],
+        "activation": "relu",
+        "layer_norm": False,
+    })
 
 
 class DQNAlgorithm(BaseAlgorithm):
@@ -45,14 +85,19 @@ class DQNAlgorithm(BaseAlgorithm):
         from torchrl.modules import EGreedyModule, QValueActor
         from torchrl.objectives import DQNLoss, HardUpdate
 
-        acfg = self.cfg.algorithm
+        self.acfg = self._build_acfg(DQNConfig())
+        acfg = self.acfg
         ecfg = self.cfg.environment
 
         # --- Environment ---
         from src.environments.factory import make_env
         env_kwargs = OmegaConf.to_container(ecfg, resolve=True)
         env_kwargs.pop("_target_", None)
-        self.env = make_env(**env_kwargs, device=str(self.device))
+        self.env = make_env(
+            **env_kwargs,
+            num_envs=int(self.cfg.trainer.num_envs),
+            device=str(self.device),
+        )
 
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
@@ -119,7 +164,7 @@ class DQNAlgorithm(BaseAlgorithm):
             create_env_fn=self.env,
             policy=self.explore_policy,
             frames_per_batch=int(acfg.frames_per_batch),
-            total_frames=int(acfg.total_frames),
+            total_frames=int(self.cfg.trainer.total_frames),
             split_trajs=False,
             device=self.device,
             storing_device=self.device,
@@ -130,7 +175,7 @@ class DQNAlgorithm(BaseAlgorithm):
         trainer_cfg: DictConfig,
         callbacks: list,
     ) -> dict[str, float]:
-        acfg = self.cfg.algorithm
+        acfg = self.acfg
         init_random_frames = int(acfg.init_random_frames)
         log_every = int(trainer_cfg.log_every_n_steps)
 
@@ -173,7 +218,7 @@ class DQNAlgorithm(BaseAlgorithm):
         return metrics
 
     def _update(self, batch: TensorDict) -> dict[str, float]:
-        acfg = self.cfg.algorithm
+        acfg = self.acfg
 
         loss_td = self.loss_module(batch)
         loss = loss_td["loss"]

@@ -12,6 +12,7 @@ Architecture:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,43 @@ from src.algorithms.base import BaseAlgorithm, TrainingState
 from src.algorithms.utils import last_episode_return
 from src.networks.factory import make_network
 from src.trainer import TrainerEvent, fire_callbacks
+
+
+@dataclass
+class PPOConfig:
+    """Hyperparameters for Proximal Policy Optimization (PPO) with clipped surrogate and GAE.
+
+    Defaults are tuned for continuous-action dm_control environments (e.g. humanoid-walk).
+    Override any field in the algorithm YAML or experiment config.
+    """
+
+    # Data collection
+    frames_per_batch: int = 2_048    # total frames per rollout across all envs (num_envs × steps_per_env)
+
+    # PPO update schedule
+    epochs_per_batch: int = 10       # number of gradient passes over each collected batch
+    minibatch_size: int = 64         # mini-batch size within each epoch
+
+    # PPO loss coefficients
+    clip_epsilon: float = 0.2        # clipping parameter ε for the surrogate objective
+    entropy_coef: float = 0.01       # entropy bonus coefficient (encourages exploration)
+    critic_coef: float = 0.5         # value loss coefficient relative to policy loss
+
+    # Advantage estimation (GAE)
+    gamma: float = 0.99              # discount factor
+    lmbda: float = 0.95              # GAE lambda — trades off bias vs. variance in advantage estimates
+
+    # Optimization
+    lr: float = 3e-4                 # Adam learning rate (shared optimizer for actor and critic)
+    max_grad_norm: float = 0.5       # gradient clipping threshold
+
+    # Network architecture — shared backbone for actor and critic
+    network: dict = field(default_factory=lambda: {
+        "architecture": "mlp",
+        "hidden_sizes": [256, 256],
+        "activation": "tanh",
+        "layer_norm": False,
+    })
 
 
 class PPOAlgorithm(BaseAlgorithm):
@@ -46,16 +84,19 @@ class PPOAlgorithm(BaseAlgorithm):
         from torchrl.objectives import ClipPPOLoss
         from torchrl.objectives.value import GAE
 
-        acfg = self.cfg.algorithm
+        self.acfg = self._build_acfg(PPOConfig())
+        acfg = self.acfg
         ecfg = self.cfg.environment
 
         # --- Vectorised environment ---
         from src.environments.factory import make_env
         env_kwargs = OmegaConf.to_container(ecfg, resolve=True)
         env_kwargs.pop("_target_", None)
-        # PPO uses num_envs from algorithm config
-        env_kwargs["num_envs"] = int(acfg.num_envs)
-        self.env = make_env(**env_kwargs, device=str(self.device))
+        self.env = make_env(
+            **env_kwargs,
+            num_envs=int(self.cfg.trainer.num_envs),
+            device=str(self.device),
+        )
 
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
@@ -119,7 +160,7 @@ class PPOAlgorithm(BaseAlgorithm):
             create_env_fn=self.env,
             policy=self.actor,
             frames_per_batch=int(acfg.frames_per_batch),
-            total_frames=int(acfg.total_frames),
+            total_frames=int(self.cfg.trainer.total_frames),
             split_trajs=False,
             device=self.device,
             storing_device=self.device,
@@ -130,7 +171,7 @@ class PPOAlgorithm(BaseAlgorithm):
         trainer_cfg: DictConfig,
         callbacks: list,
     ) -> dict[str, float]:
-        acfg = self.cfg.algorithm
+        acfg = self.acfg
         epochs = int(acfg.epochs_per_batch)
         minibatch_size = int(acfg.minibatch_size)
         log_every = int(trainer_cfg.log_every_n_steps)
@@ -176,7 +217,7 @@ class PPOAlgorithm(BaseAlgorithm):
         return metrics
 
     def _update(self, batch: TensorDict) -> dict[str, float]:
-        acfg = self.cfg.algorithm
+        acfg = self.acfg
 
         loss_td = self.loss_module(batch)
         loss = loss_td["loss_objective"] + loss_td["loss_critic"] + loss_td["loss_entropy"]

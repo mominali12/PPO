@@ -9,6 +9,7 @@ Architecture:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,29 @@ from src.networks.factory import make_network
 from src.trainer import TrainerEvent, fire_callbacks
 
 
+@dataclass
+class ReinforceConfig:
+    """Hyperparameters for REINFORCE (Monte-Carlo Policy Gradient).
+
+    Defaults are tuned for discrete-action environments like CartPole-v1.
+    Override any field in the algorithm YAML or experiment config.
+    """
+
+    # Optimization
+    lr: float = 1e-3             # Adam learning rate
+    gamma: float = 0.99          # discount factor for Monte-Carlo returns
+    max_grad_norm: float = 0.5   # gradient clipping threshold (inf = disabled)
+    normalize_returns: bool = True  # standardize returns before policy gradient loss
+
+    # Network architecture — MLP for discrete-action environments
+    network: dict = field(default_factory=lambda: {
+        "architecture": "mlp",
+        "hidden_sizes": [64, 64],
+        "activation": "tanh",
+        "layer_norm": False,
+    })
+
+
 class ReinforceAlgorithm(BaseAlgorithm):
     """Vanilla REINFORCE with Monte-Carlo returns, episode-level rollouts.
 
@@ -37,14 +61,19 @@ class ReinforceAlgorithm(BaseAlgorithm):
         from torchrl.modules import ProbabilisticActor
         from torchrl.modules.distributions import OneHotCategorical
 
-        acfg = self.cfg.algorithm
+        self.acfg = self._build_acfg(ReinforceConfig())
+        acfg = self.acfg
         ecfg = self.cfg.environment
 
         # --- Environment ---
         from src.environments.factory import make_env
         env_kwargs = OmegaConf.to_container(ecfg, resolve=True)
         env_kwargs.pop("_target_", None)
-        self.env = make_env(**env_kwargs, device=str(self.device))
+        self.env = make_env(
+            **env_kwargs,
+            num_envs=int(self.cfg.trainer.num_envs),
+            device=str(self.device),
+        )
 
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
@@ -77,8 +106,8 @@ class ReinforceAlgorithm(BaseAlgorithm):
         trainer_cfg: DictConfig,
         callbacks: list,
     ) -> dict[str, float]:
-        acfg = self.cfg.algorithm
-        total_frames = int(acfg.total_frames)
+        acfg = self.acfg
+        total_frames = int(trainer_cfg.total_frames)
         log_every = int(trainer_cfg.log_every_n_steps)
 
         fire_callbacks(
@@ -117,7 +146,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
         return metrics
 
     def _update(self, rollout: TensorDict) -> dict[str, float]:
-        acfg = self.cfg.algorithm
+        acfg = self.acfg
 
         returns = rollout.get("advantage").reshape(-1)       # [T]
         log_probs = rollout.get("action_log_prob").reshape(-1)  # [T]
@@ -167,7 +196,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
             G = rewards[t].item() + gamma * G
             returns[t] = G
 
-        if self.cfg.algorithm.get("normalize_returns", True) and T > 1:
+        if self.acfg.normalize_returns and T > 1:
             returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
         rollout.set("advantage", returns)

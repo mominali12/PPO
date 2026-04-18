@@ -1,15 +1,13 @@
 _target_: src.algorithms.reinforce.ReinforceAlgorithm
-
-# Data collection
-total_frames: 500_000      # total environment frames for the entire run
+# Default values and parameter descriptions: src/algorithms/reinforce.py (ReinforceConfig)
 
 # Optimization
 lr: 1e-3
 gamma: 0.99
 max_grad_norm: 0.5
-normalize_returns: true    # normalize MC returns before computing loss
+normalize_returns: true
 
-# Network architecture (embedded — no separate config group)
+# Network architecture
 network:
   architecture: mlp
   hidden_sizes: [64, 64]

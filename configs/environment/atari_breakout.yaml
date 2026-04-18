@@ -11,4 +11,3 @@ grayscale: true
 resize: [84, 84]
 clip_rewards: true          # sign(reward) clipping (standard for Atari DQN)
 normalize_obs: false
-num_envs: 1

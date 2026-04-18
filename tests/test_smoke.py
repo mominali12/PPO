@@ -31,34 +31,30 @@ BASE_OVERRIDES = [
 def _reinforce_overrides() -> list[str]:
     return [
         *BASE_OVERRIDES,
-        "algorithm.total_frames=2000",
-        "trainer.max_steps=2000",
+        "trainer.total_frames=2000",
     ]
 
 
 def _dqn_overrides() -> list[str]:
     return [
         *BASE_OVERRIDES,
-        "algorithm.total_frames=400",
+        "trainer.total_frames=400",
         "algorithm.frames_per_batch=100",
         "algorithm.init_random_frames=0",
         "algorithm.replay_buffer.capacity=400",
         "algorithm.replay_buffer.batch_size=32",
         "algorithm.eps_annealing_frames=200",
-        "trainer.max_steps=400",
     ]
 
 
 def _ppo_overrides() -> list[str]:
     return [
         *BASE_OVERRIDES,
-        "algorithm.total_frames=256",
+        "trainer.total_frames=256",
+        "trainer.num_envs=1",
         "algorithm.frames_per_batch=64",
-        "algorithm.num_envs=1",
         "algorithm.epochs_per_batch=1",
         "algorithm.minibatch_size=32",
-        "trainer.max_steps=256",
-        "environment.num_envs=1",
         "environment.normalize_obs=false",
     ]
 

@@ -144,6 +144,22 @@ algorithm:
     fc_hidden: [512]
 ```
 
+### Algorithm config dataclasses
+
+Each algorithm file defines a typed `@dataclass` (e.g. `ReinforceConfig`, `DQNConfig`, `PPOConfig`) that lives alongside the algorithm class. The dataclass serves three purposes:
+
+1. **Typed defaults** — every hyperparameter has an explicit Python default so the algorithm is runnable without any YAML.
+2. **Inline documentation** — comments next to each field explain what it controls and any tuning guidance, right where the parameter is consumed.
+3. **Discoverability** — a reader opening `reinforce.py` immediately sees all knobs without having to cross-reference a YAML file.
+
+The YAML files remain the authoritative source of values for running experiments. At `setup()` time, `BaseAlgorithm._build_acfg()` merges the two:
+
+```
+dataclass defaults  ←  overridden by  →  configs/algorithm/*.yaml  ←  overridden by  →  experiment config / CLI
+```
+
+This means a new algorithm only needs a minimal YAML (just `_target_:`) during prototyping — the dataclass provides all defaults — and production configs can be written with full confidence that every tunable parameter is documented in one place.
+
 ## Device selection
 
 Device configuration follows PyTorch Lightning conventions:

@@ -12,4 +12,3 @@ grayscale: false
 resize: null
 clip_rewards: false
 normalize_obs: true         # normalize observations to zero mean / unit variance
-num_envs: 4                 # vectorised for PPO

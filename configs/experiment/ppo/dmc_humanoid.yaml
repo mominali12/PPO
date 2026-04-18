@@ -6,15 +6,14 @@ defaults:
   - _self_
 
 trainer:
-  max_steps: 10_000_000
+  total_frames: 10_000_000
+  num_envs: 4
   accelerator: gpu
   devices: [0]
   seed: 42
 
 algorithm:
   frames_per_batch: 2_048
-  total_frames: 10_000_000
-  num_envs: 4
   epochs_per_batch: 10
   minibatch_size: 256
   lr: 3e-4

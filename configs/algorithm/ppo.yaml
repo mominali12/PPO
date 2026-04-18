@@ -1,24 +1,23 @@
 _target_: src.algorithms.ppo.PPOAlgorithm
+# Default values and parameter descriptions: src/algorithms/ppo.py (PPOConfig)
 
 # Data collection
-frames_per_batch: 2_048    # total frames per rollout (num_envs * steps_per_env)
-total_frames: 10_000_000
-num_envs: 4                # number of parallel environments
+frames_per_batch: 2_048
 
 # PPO-specific
-epochs_per_batch: 10       # gradient update epochs per collected batch
+epochs_per_batch: 10
 minibatch_size: 64
 clip_epsilon: 0.2
 entropy_coef: 0.01
 critic_coef: 0.5
 gamma: 0.99
-lmbda: 0.95                # GAE lambda
+lmbda: 0.95
 max_grad_norm: 0.5
 
 # Optimization
 lr: 3e-4
 
-# Network architecture (embedded — shared backbone for actor and critic)
+# Network architecture (shared backbone for actor and critic)
 network:
   architecture: mlp
   hidden_sizes: [256, 256]

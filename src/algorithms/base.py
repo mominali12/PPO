@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 
 
@@ -36,6 +36,28 @@ class BaseAlgorithm(ABC):
         self.device = device
         self._step: int = 0
 
+    def _build_acfg(self, defaults: object) -> DictConfig:
+        """Merge algorithm config dataclass defaults with YAML/experiment overrides.
+
+        Dataclass provides default values; any key present in cfg.algorithm takes
+        precedence. The resolved config is typically stored as ``self.acfg`` in
+        ``setup()`` so all methods share one consistent view of hyperparameters.
+
+        Args:
+            defaults: a dataclass instance (e.g. ``ReinforceConfig()``) holding
+                      algorithm-specific defaults.
+
+        Returns:
+            A non-struct DictConfig with defaults applied and overrides merged in.
+        """
+        default_dict = asdict(defaults)
+        yaml_dict = {
+            k: v
+            for k, v in OmegaConf.to_container(self.cfg.algorithm, resolve=True).items()
+            if k != "_target_"
+        }
+        return OmegaConf.merge(OmegaConf.create(default_dict), OmegaConf.create(yaml_dict))
+
     @abstractmethod
     def setup(self) -> None:
         """Initialize networks, loss modules, optimizers, and data collector."""
@@ -58,7 +80,7 @@ class BaseAlgorithm(ABC):
 
     @abstractmethod
     def eval(self, num_episodes: int) -> dict[str, float]:
-        """Run deterministic evaluation episodes.
+        """Run evaluation episodes.
 
         Args:
             num_episodes: number of episodes to evaluate
