@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from omegaconf import DictConfig, ListConfig
+from typing import TYPE_CHECKING
+
 from hydra.utils import instantiate
+from omegaconf import DictConfig, ListConfig
+
+if TYPE_CHECKING:
+    from src.trainer import BaseTrainer
 
 
 def build_loggers(logger_cfgs: ListConfig | list) -> list:
@@ -20,7 +25,7 @@ def build_loggers(logger_cfgs: ListConfig | list) -> list:
 def build_callbacks(
     trainer_cfg: DictConfig,
     checkpoint_cfg: DictConfig,
-    algorithm: object,
+    trainer: BaseTrainer,
     loggers: list,
 ) -> list:
     """Assemble the full callback list for a training run.
@@ -29,26 +34,26 @@ def build_callbacks(
     Logger callbacks are appended after.
 
     Args:
-        trainer_cfg: trainer sub-config (contains max_steps, log_every_n_steps)
+        trainer_cfg: trainer sub-config (contains total_frames, log_every_n_steps)
         checkpoint_cfg: checkpoint sub-config (save_dir, save_every_n_steps, save_last)
-        algorithm: the algorithm instance (injected into CheckpointCallback)
+        trainer: the trainer instance (injected into CheckpointCallback)
         loggers: pre-instantiated logger callback objects
 
     Returns:
         ordered list of callbacks
     """
-    from src.callbacks.progress import ProgressCallback
     from src.callbacks.checkpoint import CheckpointCallback
+    from src.callbacks.progress import ProgressCallback
 
     checkpoint_cb = CheckpointCallback(
         save_dir=checkpoint_cfg.save_dir,
         save_every_n_steps=checkpoint_cfg.save_every_n_steps,
         save_last=checkpoint_cfg.save_last,
     )
-    checkpoint_cb.set_algorithm(algorithm)
+    checkpoint_cb.set_trainer(trainer)
 
     return [
-        ProgressCallback(total_steps=trainer_cfg.max_steps),
+        ProgressCallback(total_steps=trainer_cfg.total_frames),
         checkpoint_cb,
         *loggers,
     ]

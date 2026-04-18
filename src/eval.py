@@ -28,18 +28,27 @@ def _evaluate(cfg: DictConfig) -> dict[str, float]:
     """
     from hydra.utils import get_class
 
-    from src.utils.device import resolve_device
+    from src.environments.environment import Environment
     from src.utils.seeding import seed_everything
 
     seed_everything(int(cfg.trainer.seed))
-    device = resolve_device(cfg.trainer.accelerator, list(cfg.trainer.devices))
+
+    environment = Environment(cfg.environment)
 
     AlgClass = get_class(cfg.algorithm._target_)
-    algorithm = AlgClass(cfg=cfg, device=device)
-    algorithm.setup()
-    algorithm.load_checkpoint(cfg.checkpoint.resume_from)
+    algorithm = AlgClass(cfg=cfg, device=None)  # Trainer sets device
 
-    return algorithm.eval(num_episodes=int(cfg.trainer.num_eval_episodes))
+    TrainerClass = get_class(cfg.trainer._target_)
+    trainer = TrainerClass(
+        cfg=cfg,
+        algorithm=algorithm,
+        environment=environment,
+    )
+
+    trainer.setup()
+    trainer.load_checkpoint(cfg.checkpoint.resume_from)
+
+    return trainer.evaluate(num_episodes=int(cfg.trainer.num_eval_episodes))
 
 
 if __name__ == "__main__":

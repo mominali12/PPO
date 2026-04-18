@@ -7,9 +7,13 @@ defaults:
   - override hydra/hydra_logging: colorlog
 
 trainer:
+  _target_: src.trainer.EpisodicTrainer  # any trainer works for eval
   accelerator: cpu
   devices: [0]
   seed: 42
+  total_frames: 0          # not used for eval, but required by trainer
+  num_envs: 1
+  log_every_n_steps: 1_000
   num_eval_episodes: 10
 
 checkpoint:

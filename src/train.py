@@ -28,28 +28,40 @@ def _train(cfg: DictConfig) -> dict[str, float]:
     """
     from hydra.utils import get_class
 
-    from src.utils.device import resolve_device
+    from src.environments.environment import Environment
     from src.utils.instantiate import build_callbacks, build_loggers
     from src.utils.seeding import seed_everything
 
     seed_everything(int(cfg.trainer.seed))
-    device = resolve_device(cfg.trainer.accelerator, list(cfg.trainer.devices))
 
-    # Instantiate loggers (may be empty list = no logging)
+    # Build components
+    environment = Environment(cfg.environment)
+
+    AlgClass = get_class(cfg.algorithm._target_)
+    algorithm = AlgClass(cfg=cfg, device=None)  # Trainer sets device
+
     loggers = build_loggers(cfg.logger)
 
-    # Instantiate algorithm (select class via _target_, pass full cfg + device)
-    AlgClass = get_class(cfg.algorithm._target_)
-    algorithm = AlgClass(cfg=cfg, device=device)
-    algorithm.setup()
+    # Select and create trainer
+    TrainerClass = get_class(cfg.trainer._target_)
+    trainer = TrainerClass(
+        cfg=cfg,
+        algorithm=algorithm,
+        environment=environment,
+    )
+
+    # Build callbacks (references trainer for checkpointing)
+    callbacks = build_callbacks(cfg.trainer, cfg.checkpoint, trainer, loggers)
+    trainer.callbacks = callbacks
+
+    # Setup (creates env, builds networks, creates collector if StepTrainer)
+    trainer.setup()
 
     # Optionally resume from a checkpoint
     if cfg.checkpoint.get("resume_from") is not None:
-        algorithm.load_checkpoint(cfg.checkpoint.resume_from)
+        trainer.load_checkpoint(cfg.checkpoint.resume_from)
 
-    callbacks = build_callbacks(cfg.trainer, cfg.checkpoint, algorithm, loggers)
-
-    return algorithm.train(cfg.trainer, callbacks)
+    return trainer.fit()
 
 
 if __name__ == "__main__":

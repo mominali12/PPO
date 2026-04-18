@@ -5,24 +5,20 @@ Compatible environments: discrete-action Gym environments (e.g. CartPole-v1).
 Architecture:
   - Policy: MLP → Categorical distribution (discrete actions)
   - No value baseline (vanilla REINFORCE)
-  - Training: episode-by-episode rollouts via env.rollout()
+  - Trainer: EpisodicTrainer (full episode rollouts)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
+from torchrl.envs import EnvBase
 
 from src.algorithms.base import BaseAlgorithm, TrainingState
-from src.algorithms.utils import last_episode_return
 from src.networks.factory import make_network
-from src.trainer import TrainerEvent, fire_callbacks
 
 
 @dataclass
@@ -49,31 +45,15 @@ class ReinforceConfig:
 
 
 class ReinforceAlgorithm(BaseAlgorithm):
-    """Vanilla REINFORCE with Monte-Carlo returns, episode-level rollouts.
+    """Vanilla REINFORCE with Monte-Carlo returns, episode-level rollouts."""
 
-    Args:
-        cfg: full Hydra config
-        device: resolved torch.device
-    """
-
-    def setup(self) -> None:
-        """Build env, policy, and optimizer."""
+    def setup(self, env: EnvBase) -> None:
         from torchrl.modules import ProbabilisticActor
         from torchrl.modules.distributions import OneHotCategorical
 
         self.acfg = self._build_acfg(ReinforceConfig())
         acfg = self.acfg
         ecfg = self.cfg.environment
-
-        # --- Environment ---
-        from src.environments.factory import make_env
-        env_kwargs = OmegaConf.to_container(ecfg, resolve=True)
-        env_kwargs.pop("_target_", None)
-        self.env = make_env(
-            **env_kwargs,
-            num_envs=int(self.cfg.trainer.num_envs),
-            device=str(self.device),
-        )
 
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
@@ -101,55 +81,28 @@ class ReinforceAlgorithm(BaseAlgorithm):
             lr=float(acfg.lr),
         )
 
-    def train(
-        self,
-        trainer_cfg: DictConfig,
-        callbacks: list,
-    ) -> dict[str, float]:
-        acfg = self.acfg
-        total_frames = int(trainer_cfg.total_frames)
-        log_every = int(trainer_cfg.log_every_n_steps)
+    # ------------------------------------------------------------------
+    # Policy access
+    # ------------------------------------------------------------------
 
-        fire_callbacks(
-            TrainerEvent.ON_TRAIN_START,
-            callbacks,
-            state={"cfg": self.cfg},
-        )
+    def get_policy(self) -> TensorDictModule:
+        return self.actor
 
-        metrics: dict[str, float] = {}
-        while self._step < total_frames:
-            # Collect one episode; cap at remaining budget to respect total_frames
-            remaining = total_frames - self._step
-            rollout = self.env.rollout(
-                max_steps=remaining,
-                policy=self.actor,
-                auto_reset=True,
-            )
+    def get_explore_policy(self) -> TensorDictModule:
+        return self.actor  # stochastic actor IS the exploration policy
 
-            rollout = self._compute_returns(rollout, gamma=float(acfg.gamma))
-            metrics = self._update(rollout)
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
 
-            prev_step = self._step
-            self._step += rollout.batch_size[0]
-
-            # Fire callbacks when we cross a log_every boundary
-            if prev_step // log_every < self._step // log_every:
-                metrics["reward/last"] = last_episode_return(rollout)
-                fire_callbacks(
-                    TrainerEvent.ON_STEP_END,
-                    callbacks,
-                    metrics=metrics,
-                    step=self._step,
-                )
-
-        fire_callbacks(TrainerEvent.ON_TRAIN_END, callbacks, state={"cfg": self.cfg})
-        return metrics
-
-    def _update(self, rollout: TensorDict) -> dict[str, float]:
+    def step(self, batch: TensorDict) -> dict[str, float]:
+        """Process a full episode: compute returns, then policy gradient update."""
         acfg = self.acfg
 
-        returns = rollout.get("advantage").reshape(-1)       # [T]
-        log_probs = rollout.get("action_log_prob").reshape(-1)  # [T]
+        batch = self._compute_returns(batch, gamma=float(acfg.gamma))
+
+        returns = batch.get("advantage").reshape(-1)
+        log_probs = batch.get("action_log_prob").reshape(-1)
 
         loss = -(log_probs * returns).mean()
 
@@ -160,34 +113,13 @@ class ReinforceAlgorithm(BaseAlgorithm):
 
         return {"loss/policy": loss.item()}
 
-    def eval(self, num_episodes: int) -> dict[str, float]:
-        from torchrl.envs.utils import set_exploration_type, ExplorationType
-
-        returns = []
-        with torch.no_grad(), set_exploration_type(ExplorationType.MODE):
-            for _ in range(num_episodes):
-                td = self.env.reset()
-                episode_return = 0.0
-                done = False
-                while not done:
-                    td = self.actor(td)
-                    td = self.env.step(td)
-                    episode_return += td["next", "reward"].item()
-                    done = td["next", "done"].item() or td["next", "terminated"].item()
-                    td = td["next"]
-                returns.append(episode_return)
-
-        t = torch.tensor(returns, dtype=torch.float32)
-        return {
-            "eval/return_mean": t.mean().item(),
-            "eval/return_std": t.std().item(),
-            "eval/return_min": t.min().item(),
-            "eval/return_max": t.max().item(),
-        }
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
     def _compute_returns(self, rollout: TensorDict, gamma: float) -> TensorDict:
         """Compute discounted Monte-Carlo returns and write them as 'advantage'."""
-        rewards = rollout.get(("next", "reward")).reshape(-1)  # [T]
+        rewards = rollout.get(("next", "reward")).reshape(-1)
         T = rewards.shape[0]
 
         returns = torch.zeros(T, dtype=torch.float32, device=rewards.device)
@@ -202,12 +134,15 @@ class ReinforceAlgorithm(BaseAlgorithm):
         rollout.set("advantage", returns)
         return rollout
 
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
     def _get_training_state(self) -> TrainingState:
         return TrainingState(
-            step=self._step,
+            step=0,  # Trainer sets the real step
             policy_state_dict=self.actor.state_dict(),
             optimizer_state_dict=self.optimizer.state_dict(),
-            replay_buffer_state=None,
         )
 
     def _load_training_state(self, state: TrainingState) -> None:

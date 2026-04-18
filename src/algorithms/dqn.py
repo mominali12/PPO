@@ -10,24 +10,20 @@ Architecture:
   - Loss: DQNLoss with double-DQN target network
   - Target update: HardUpdate every N frames
   - Buffer: ReplayBuffer with LazyMemmapStorage
-  - Collector: SyncDataCollector (step-based, split_trajs=False)
+  - Trainer: StepTrainer (SyncDataCollector, step-based)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
-from tensordict.nn import TensorDictModule
+from tensordict.nn import TensorDictModule, TensorDictSequential
+from torchrl.envs import EnvBase
 
-from src.algorithms.base import BaseAlgorithm, TrainingState
-from src.algorithms.utils import last_episode_return
+from src.algorithms.base import BaseAlgorithm, CollectorConfig, TrainingState
 from src.networks.factory import make_network
-from src.trainer import TrainerEvent, fire_callbacks
 
 
 @dataclass
@@ -41,7 +37,7 @@ class DQNConfig:
 
     # Data collection
     frames_per_batch: int = 200       # frames added to replay buffer per collector step
-    init_random_frames: int = 5_000   # warm-up frames collected with random policy before training starts
+    init_random_frames: int = 5_000   # warm-up frames collected before training starts
 
     # Replay buffer
     replay_buffer: dict = field(default_factory=lambda: {
@@ -70,17 +66,10 @@ class DQNConfig:
 
 
 class DQNAlgorithm(BaseAlgorithm):
-    """DQN with double-DQN target network and epsilon-greedy exploration.
+    """DQN with double-DQN target network and epsilon-greedy exploration."""
 
-    Args:
-        cfg: full Hydra config
-        device: resolved torch.device
-    """
-
-    def setup(self) -> None:
-        from tensordict.nn import TensorDictSequential
-        from torchrl.collectors import SyncDataCollector
-        from torchrl.data import LazyMemmapStorage, ReplayBuffer, TensorDictReplayBuffer
+    def setup(self, env: EnvBase) -> None:
+        from torchrl.data import LazyMemmapStorage, TensorDictReplayBuffer
         from torchrl.data.replay_buffers.samplers import RandomSampler
         from torchrl.modules import EGreedyModule, QValueActor
         from torchrl.objectives import DQNLoss, HardUpdate
@@ -89,23 +78,12 @@ class DQNAlgorithm(BaseAlgorithm):
         acfg = self.acfg
         ecfg = self.cfg.environment
 
-        # --- Environment ---
-        from src.environments.factory import make_env
-        env_kwargs = OmegaConf.to_container(ecfg, resolve=True)
-        env_kwargs.pop("_target_", None)
-        self.env = make_env(
-            **env_kwargs,
-            num_envs=int(self.cfg.trainer.num_envs),
-            device=str(self.device),
-        )
-
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
 
         # --- Q-network ---
         q_net = make_network(acfg.network, obs_shape, num_actions).to(self.device)
 
-        # Determine observation key (pixels envs use "observation" after transforms)
         obs_key = "observation"
         q_module = TensorDictModule(
             q_net,
@@ -115,18 +93,18 @@ class DQNAlgorithm(BaseAlgorithm):
         self.q_actor = QValueActor(
             module=q_module,
             in_keys=[obs_key],
-            spec=self.env.action_spec,
+            spec=env.action_spec,
         ).to(self.device)
 
-        # Epsilon-greedy exploration wrapper (used only during collection)
+        # Epsilon-greedy exploration wrapper
         self.eps_module = EGreedyModule(
-            spec=self.env.action_spec,
+            spec=env.action_spec,
             annealing_num_steps=int(acfg.eps_annealing_frames),
             eps_init=float(acfg.eps_start),
             eps_end=float(acfg.eps_end),
             action_key="action",
         )
-        self.explore_policy = TensorDictSequential(
+        self._explore_policy = TensorDictSequential(
             self.q_actor,
             self.eps_module,
         ).to(self.device)
@@ -135,7 +113,7 @@ class DQNAlgorithm(BaseAlgorithm):
         self.loss_module = DQNLoss(
             value_network=self.q_actor,
             loss_function="l2",
-            delay_value=True,  # creates a target network clone
+            delay_value=True,
         ).to(self.device)
         self.loss_module.make_value_estimator(gamma=float(acfg.gamma))
 
@@ -159,74 +137,49 @@ class DQNAlgorithm(BaseAlgorithm):
             lr=float(acfg.lr),
         )
 
-        # --- Data collector (uses epsilon-greedy policy) ---
-        self.collector = SyncDataCollector(
-            create_env_fn=self.env,
-            policy=self.explore_policy,
-            frames_per_batch=int(acfg.frames_per_batch),
+    # ------------------------------------------------------------------
+    # Policy access
+    # ------------------------------------------------------------------
+
+    def get_policy(self) -> TensorDictModule:
+        return self.q_actor
+
+    def get_explore_policy(self) -> TensorDictModule:
+        return self._explore_policy
+
+    # ------------------------------------------------------------------
+    # Collector configuration
+    # ------------------------------------------------------------------
+
+    def get_collector_config(self) -> CollectorConfig:
+        return CollectorConfig(
+            frames_per_batch=int(self.acfg.frames_per_batch),
             total_frames=int(self.cfg.trainer.total_frames),
-            split_trajs=False,
-            device=self.device,
-            storing_device=self.device,
         )
 
-    def train(
-        self,
-        trainer_cfg: DictConfig,
-        callbacks: list,
-    ) -> dict[str, float]:
-        acfg = self.acfg
-        init_random_frames = int(acfg.init_random_frames)
-        log_every = int(trainer_cfg.log_every_n_steps)
+    # ------------------------------------------------------------------
+    # Training hooks
+    # ------------------------------------------------------------------
 
-        fire_callbacks(
-            TrainerEvent.ON_TRAIN_START,
-            callbacks,
-            state={"cfg": self.cfg},
-        )
+    def on_batch_collected(self, batch: TensorDict) -> TensorDict:
+        """Store transitions in replay buffer (runs even during warmup)."""
+        self.replay_buffer.extend(batch.reshape(-1))
+        return batch
 
-        metrics: dict[str, float] = {}
-        for batch in self.collector:
-            # Add new transitions to replay buffer
-            self.replay_buffer.extend(batch.reshape(-1))
-            self._step += batch.numel()
+    def should_skip_update(self, frames_collected: int) -> bool:
+        return frames_collected < int(self.acfg.init_random_frames)
 
-            # Skip updates during warm-up
-            if self._step < init_random_frames:
-                continue
+    def step(self, batch: TensorDict) -> dict[str, float]:
+        """Sample from replay buffer and do one gradient update."""
+        sample = self.replay_buffer.sample().to(self.device)
 
-            # Step epsilon decay
-            self.eps_module.step(batch.numel())
-
-            # Gradient update
-            sample = self.replay_buffer.sample().to(self.device)
-            metrics = self._update(sample)
-
-            # Hard-update target network on schedule
-            self.target_updater.step()
-
-            if self._step % log_every < int(acfg.frames_per_batch):
-                metrics["reward/last"] = last_episode_return(batch)
-                fire_callbacks(
-                    TrainerEvent.ON_STEP_END,
-                    callbacks,
-                    metrics=metrics,
-                    step=self._step,
-                )
-
-        fire_callbacks(TrainerEvent.ON_TRAIN_END, callbacks, state={"cfg": self.cfg})
-        return metrics
-
-    def _update(self, batch: TensorDict) -> dict[str, float]:
-        acfg = self.acfg
-
-        loss_td = self.loss_module(batch)
+        loss_td = self.loss_module(sample)
         loss = loss_td["loss"]
 
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(
-            self.loss_module.parameters(), float(acfg.max_grad_norm)
+            self.loss_module.parameters(), float(self.acfg.max_grad_norm)
         )
         self.optimizer.step()
 
@@ -235,41 +188,24 @@ class DQNAlgorithm(BaseAlgorithm):
             "q/mean": loss_td.get("pred_value", torch.tensor(0.0)).mean().item(),
         }
 
-    def eval(self, num_episodes: int) -> dict[str, float]:
-        from torchrl.envs.utils import ExplorationType, set_exploration_type
+    def on_step_complete(self, frames_collected: int) -> None:
+        """Decay epsilon and update target network."""
+        if frames_collected >= int(self.acfg.init_random_frames):
+            self.eps_module.step(int(self.acfg.frames_per_batch))
+            self.target_updater.step()
 
-        returns = []
-        with torch.no_grad(), set_exploration_type(ExplorationType.GREEDY):
-            for _ in range(num_episodes):
-                td = self.env.reset()
-                episode_return = 0.0
-                done = False
-                while not done:
-                    td = self.q_actor(td)
-                    td = self.env.step(td)
-                    episode_return += td["next", "reward"].item()
-                    done = td["next", "done"].item() or td["next", "terminated"].item()
-                    td = td["next"]
-                returns.append(episode_return)
-
-        t = torch.tensor(returns, dtype=torch.float32)
-        return {
-            "eval/return_mean": t.mean().item(),
-            "eval/return_std": t.std().item(),
-            "eval/return_min": t.min().item(),
-            "eval/return_max": t.max().item(),
-        }
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
 
     def _get_training_state(self) -> TrainingState:
         return TrainingState(
-            step=self._step,
+            step=0,
             policy_state_dict=self.q_actor.state_dict(),
             optimizer_state_dict=self.optimizer.state_dict(),
-            replay_buffer_state={"storage_path": str(self.replay_buffer._storage._path)},
+            extra={"storage_path": str(self.replay_buffer._storage._path)},
         )
 
     def _load_training_state(self, state: TrainingState) -> None:
         self.q_actor.load_state_dict(state.policy_state_dict)
         self.optimizer.load_state_dict(state.optimizer_state_dict)
-        # Replay buffer storage is memory-mapped; path is preserved in checkpoint
-        # but re-populating it is non-trivial; skip for resumption scenarios

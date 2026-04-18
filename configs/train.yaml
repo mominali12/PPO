@@ -10,6 +10,7 @@ defaults:
 logger: []
 
 trainer:
+  _target_: src.trainer.StepTrainer   # or src.trainer.EpisodicTrainer
   accelerator: cpu        # "cpu" | "gpu" | "mps"
   devices: [0]            # GPU indices; ignored when accelerator=cpu
   seed: 42
