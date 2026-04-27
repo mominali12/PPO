@@ -9,10 +9,9 @@ Architecture:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torchrl.envs import EnvBase
@@ -21,46 +20,55 @@ from src.algorithms.base import BaseAlgorithm, TrainingState
 from src.networks.factory import make_network
 
 
-@dataclass
-class ReinforceConfig:
-    """Hyperparameters for REINFORCE (Monte-Carlo Policy Gradient).
+class ReinforceAlgorithm(BaseAlgorithm):
+    """Vanilla REINFORCE with Monte-Carlo returns, episode-level rollouts.
 
     Defaults are tuned for discrete-action environments like CartPole-v1.
-    Override any field in the algorithm YAML or experiment config.
+    Override any parameter in the algorithm YAML or experiment config.
+
+    Args:
+        cfg: Full Hydra config (trainer, logger, environment sections).
+        device: Resolved torch.device; set by the Trainer.
+        lr: Adam optimizer learning rate.
+        gamma: Discount factor for Monte-Carlo returns.
+        max_grad_norm: Gradient clipping threshold (L2 norm).
+        normalize_returns: Standardize returns before policy gradient loss.
+        network: Dict with keys ``architecture``, ``hidden_sizes``, ``activation``,
+            ``layer_norm``. Use ``"mlp"`` for discrete-action environments.
     """
 
-    # Optimization
-    lr: float = 1e-3             # Adam learning rate
-    gamma: float = 0.99          # discount factor for Monte-Carlo returns
-    max_grad_norm: float = 0.5   # gradient clipping threshold (inf = disabled)
-    normalize_returns: bool = True  # standardize returns before policy gradient loss
-
-    # Network architecture — MLP for discrete-action environments
-    network: dict = field(default_factory=lambda: {
-        "architecture": "mlp",
-        "hidden_sizes": [64, 64],
-        "activation": "tanh",
-        "layer_norm": False,
-    })
-
-
-class ReinforceAlgorithm(BaseAlgorithm):
-    """Vanilla REINFORCE with Monte-Carlo returns, episode-level rollouts."""
+    def __init__(
+        self,
+        cfg: DictConfig,
+        device: torch.device | None = None,
+        *,
+        lr: float = 1e-3,
+        gamma: float = 0.99,
+        max_grad_norm: float = 0.5,
+        normalize_returns: bool = True,
+        network: dict | None = None,
+    ) -> None:
+        super().__init__(cfg, device)
+        self.lr = lr
+        self.gamma = gamma
+        self.max_grad_norm = max_grad_norm
+        self.normalize_returns = normalize_returns
+        self._network_cfg = network or {
+            "architecture": "mlp", "hidden_sizes": [64, 64],
+            "activation": "tanh", "layer_norm": False,
+        }
 
     def setup(self, env: EnvBase) -> None:
         from torchrl.modules import ProbabilisticActor
         from torchrl.modules.distributions import OneHotCategorical
 
-        self.acfg = self._build_acfg(ReinforceConfig())
-        acfg = self.acfg
         ecfg = self.cfg.environment
-
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
+        net_cfg = OmegaConf.create(self._network_cfg)
 
         # --- Policy network ---
-        policy_net = make_network(acfg.network, obs_shape, num_actions)
-        policy_net = policy_net.to(self.device)
+        policy_net = make_network(net_cfg, obs_shape, num_actions).to(self.device)
 
         policy_module = TensorDictModule(
             policy_net,
@@ -78,7 +86,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
         # --- Optimizer ---
         self.optimizer = torch.optim.Adam(
             self.actor.parameters(),
-            lr=float(acfg.lr),
+            lr=self.lr,
         )
 
     # ------------------------------------------------------------------
@@ -97,9 +105,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
 
     def step(self, batch: TensorDict) -> dict[str, float]:
         """Process a full episode: compute returns, then policy gradient update."""
-        acfg = self.acfg
-
-        batch = self._compute_returns(batch, gamma=float(acfg.gamma))
+        batch = self._compute_returns(batch, gamma=self.gamma)
 
         returns = batch.get("advantage").reshape(-1)
         log_probs = batch.get("action_log_prob").reshape(-1)
@@ -108,7 +114,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
 
         self.optimizer.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.actor.parameters(), float(acfg.max_grad_norm))
+        nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
         return {"loss/policy": loss.item()}
@@ -128,7 +134,7 @@ class ReinforceAlgorithm(BaseAlgorithm):
             G = rewards[t].item() + gamma * G
             returns[t] = G
 
-        if self.acfg.normalize_returns and T > 1:
+        if self.normalize_returns and T > 1:
             returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
         rollout.set("advantage", returns)

@@ -12,10 +12,9 @@ Architecture:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torchrl.envs import EnvBase
@@ -24,45 +23,61 @@ from src.algorithms.base import BaseAlgorithm, CollectorConfig, TrainingState
 from src.networks.factory import make_network
 
 
-@dataclass
-class PPOConfig:
-    """Hyperparameters for Proximal Policy Optimization (PPO) with clipped surrogate and GAE.
+class PPOAlgorithm(BaseAlgorithm):
+    """PPO with clipped surrogate objective, GAE, and parallel environment collection.
 
     Defaults are tuned for continuous-action dm_control environments (e.g. humanoid-walk).
-    Override any field in the algorithm YAML or experiment config.
+    Override any parameter in the algorithm YAML or experiment config.
+
+    Args:
+        cfg: Full Hydra config (trainer, logger, environment sections).
+        device: Resolved torch.device; set by the Trainer.
+        frames_per_batch: Total frames per rollout across all envs.
+        epochs_per_batch: Number of gradient passes over each collected batch.
+        minibatch_size: Mini-batch size within each epoch.
+        clip_epsilon: Clipping parameter for the surrogate objective.
+        entropy_coef: Entropy bonus coefficient.
+        critic_coef: Value loss coefficient relative to policy loss.
+        gamma: Discount factor for future rewards.
+        lmbda: GAE lambda for advantage estimation.
+        lr: Adam optimizer learning rate.
+        max_grad_norm: Gradient clipping threshold (L2 norm).
+        network: Dict with keys ``architecture``, ``hidden_sizes``, ``activation``,
+            ``layer_norm``. Shared backbone for actor and critic.
     """
 
-    # Data collection
-    frames_per_batch: int = 2_048    # total frames per rollout across all envs
-
-    # PPO update schedule
-    epochs_per_batch: int = 10       # number of gradient passes over each collected batch
-    minibatch_size: int = 64         # mini-batch size within each epoch
-
-    # PPO loss coefficients
-    clip_epsilon: float = 0.2        # clipping parameter for the surrogate objective
-    entropy_coef: float = 0.01       # entropy bonus coefficient
-    critic_coef: float = 0.5         # value loss coefficient relative to policy loss
-
-    # Advantage estimation (GAE)
-    gamma: float = 0.99              # discount factor
-    lmbda: float = 0.95              # GAE lambda
-
-    # Optimization
-    lr: float = 3e-4                 # Adam learning rate
-    max_grad_norm: float = 0.5       # gradient clipping threshold
-
-    # Network architecture — shared backbone for actor and critic
-    network: dict = field(default_factory=lambda: {
-        "architecture": "mlp",
-        "hidden_sizes": [256, 256],
-        "activation": "tanh",
-        "layer_norm": False,
-    })
-
-
-class PPOAlgorithm(BaseAlgorithm):
-    """PPO with clipped surrogate objective, GAE, and parallel environment collection."""
+    def __init__(
+        self,
+        cfg: DictConfig,
+        device: torch.device | None = None,
+        *,
+        frames_per_batch: int = 2_048,
+        epochs_per_batch: int = 10,
+        minibatch_size: int = 64,
+        clip_epsilon: float = 0.2,
+        entropy_coef: float = 0.01,
+        critic_coef: float = 0.5,
+        gamma: float = 0.99,
+        lmbda: float = 0.95,
+        lr: float = 3e-4,
+        max_grad_norm: float = 0.5,
+        network: dict | None = None,
+    ) -> None:
+        super().__init__(cfg, device)
+        self.frames_per_batch = frames_per_batch
+        self.epochs_per_batch = epochs_per_batch
+        self.minibatch_size = minibatch_size
+        self.clip_epsilon = clip_epsilon
+        self.entropy_coef = entropy_coef
+        self.critic_coef = critic_coef
+        self.gamma = gamma
+        self.lmbda = lmbda
+        self.lr = lr
+        self.max_grad_norm = max_grad_norm
+        self._network_cfg = network or {
+            "architecture": "mlp", "hidden_sizes": [256, 256],
+            "activation": "tanh", "layer_norm": False,
+        }
 
     def setup(self, env: EnvBase) -> None:
         from torchrl.modules import (
@@ -74,15 +89,13 @@ class PPOAlgorithm(BaseAlgorithm):
         from torchrl.objectives import ClipPPOLoss
         from torchrl.objectives.value import GAE
 
-        self.acfg = self._build_acfg(PPOConfig())
-        acfg = self.acfg
         ecfg = self.cfg.environment
-
         obs_shape = tuple(ecfg.obs_shape)
         num_actions = int(ecfg.num_actions)
+        net_cfg = OmegaConf.create(self._network_cfg)
 
         # --- Actor backbone → outputs 2 * num_actions (mean + log_std) ---
-        actor_net = make_network(acfg.network, obs_shape, num_actions * 2).to(self.device)
+        actor_net = make_network(net_cfg, obs_shape, num_actions * 2).to(self.device)
         actor_module = TensorDictModule(
             nn.Sequential(actor_net, NormalParamExtractor()),
             in_keys=["observation"],
@@ -103,7 +116,7 @@ class PPOAlgorithm(BaseAlgorithm):
         ).to(self.device)
 
         # --- Critic ---
-        critic_net = make_network(acfg.network, obs_shape, 1).to(self.device)
+        critic_net = make_network(net_cfg, obs_shape, 1).to(self.device)
         self.critic = ValueOperator(
             module=critic_net,
             in_keys=["observation"],
@@ -111,8 +124,8 @@ class PPOAlgorithm(BaseAlgorithm):
 
         # --- Advantage module (GAE) ---
         self.gae = GAE(
-            gamma=float(acfg.gamma),
-            lmbda=float(acfg.lmbda),
+            gamma=self.gamma,
+            lmbda=self.lmbda,
             value_network=self.critic,
             average_gae=False,
         )
@@ -121,10 +134,10 @@ class PPOAlgorithm(BaseAlgorithm):
         self.loss_module = ClipPPOLoss(
             actor_network=self.actor,
             critic_network=self.critic,
-            clip_epsilon=float(acfg.clip_epsilon),
+            clip_epsilon=self.clip_epsilon,
             entropy_bonus=True,
-            entropy_coeff=float(acfg.entropy_coef),
-            critic_coeff=float(acfg.critic_coef),
+            entropy_coeff=self.entropy_coef,
+            critic_coeff=self.critic_coef,
             normalize_advantage=True,
             loss_critic_type="smooth_l1",
         ).to(self.device)
@@ -132,7 +145,7 @@ class PPOAlgorithm(BaseAlgorithm):
         # --- Single optimizer for actor + critic ---
         self.optimizer = torch.optim.Adam(
             list(self.actor.parameters()) + list(self.critic.parameters()),
-            lr=float(acfg.lr),
+            lr=self.lr,
         )
 
     # ------------------------------------------------------------------
@@ -151,7 +164,7 @@ class PPOAlgorithm(BaseAlgorithm):
 
     def get_collector_config(self) -> CollectorConfig:
         return CollectorConfig(
-            frames_per_batch=int(self.acfg.frames_per_batch),
+            frames_per_batch=self.frames_per_batch,
             total_frames=int(self.cfg.trainer.total_frames),
         )
 
@@ -161,10 +174,6 @@ class PPOAlgorithm(BaseAlgorithm):
 
     def step(self, batch: TensorDict) -> dict[str, float]:
         """Compute GAE, then multi-epoch minibatch PPO updates."""
-        acfg = self.acfg
-        epochs = int(acfg.epochs_per_batch)
-        minibatch_size = int(acfg.minibatch_size)
-
         # Compute GAE advantages in-place
         with torch.no_grad():
             self.gae(batch)
@@ -174,10 +183,10 @@ class PPOAlgorithm(BaseAlgorithm):
         batch_size = data.batch_size[0]
 
         metrics: dict[str, float] = {}
-        for _ in range(epochs):
+        for _ in range(self.epochs_per_batch):
             perm = torch.randperm(batch_size, device=self.device)
-            for start in range(0, batch_size, minibatch_size):
-                idx = perm[start : start + minibatch_size]
+            for start in range(0, batch_size, self.minibatch_size):
+                idx = perm[start : start + self.minibatch_size]
                 if len(idx) < 2:
                     continue
                 mb = data[idx]
@@ -193,7 +202,7 @@ class PPOAlgorithm(BaseAlgorithm):
                 loss.backward()
                 nn.utils.clip_grad_norm_(
                     list(self.actor.parameters()) + list(self.critic.parameters()),
-                    float(acfg.max_grad_norm),
+                    self.max_grad_norm,
                 )
                 self.optimizer.step()
 

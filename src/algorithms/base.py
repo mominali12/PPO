@@ -13,12 +13,12 @@ Lifecycle (called by Trainer):
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torchrl.envs import EnvBase
@@ -59,29 +59,6 @@ class BaseAlgorithm(ABC):
     def __init__(self, cfg: DictConfig, device: torch.device) -> None:
         self.cfg = cfg
         self.device = device
-
-    # ------------------------------------------------------------------
-    # Config helpers
-    # ------------------------------------------------------------------
-
-    def _build_acfg(self, defaults: object) -> DictConfig:
-        """Merge algorithm config dataclass defaults with YAML/experiment overrides.
-
-        Dataclass provides default values; any key present in ``cfg.algorithm``
-        takes precedence.  The resolved config is typically stored as
-        ``self.acfg`` in ``setup()`` so all methods share one consistent view.
-        """
-        default_dict = asdict(defaults)
-        yaml_dict = {
-            k: v
-            for k, v in OmegaConf.to_container(
-                self.cfg.algorithm, resolve=True
-            ).items()
-            if k != "_target_"
-        }
-        return OmegaConf.merge(
-            OmegaConf.create(default_dict), OmegaConf.create(yaml_dict)
-        )
 
     # ------------------------------------------------------------------
     # Setup

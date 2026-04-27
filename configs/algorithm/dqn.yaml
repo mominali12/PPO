@@ -1,5 +1,5 @@
 _target_: src.algorithms.dqn.DQNAlgorithm
-# Default values and parameter descriptions: src/algorithms/dqn.py (DQNConfig)
+# Default values and parameter descriptions: src/algorithms/dqn.py (DQNAlgorithm.__init__)
 
 # Data collection
 frames_per_batch: 200

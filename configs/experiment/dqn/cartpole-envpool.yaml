@@ -1,7 +1,9 @@
 # @package _global_
-# DQN on CartPole using envpool (16 parallel envs, GPU collector).
-# The envpool wrapper now derives `terminated` vs `truncated` from step counts
-# so DQN bootstraps correctly across time-limit truncations.
+# DQN on CartPole with 16 parallel envs (torchrl ParallelEnv under the hood;
+# see src/environments/factory.py for why the "envpool" backend is wired to
+# ParallelEnv rather than MultiThreadedEnv).
+# Accelerator stays on CPU: the MLP is tiny enough that GPU transfer overhead
+# dominates for CartPole.
 defaults:
   - override /algorithm: dqn
   - override /environment: cartpole_envpool
@@ -9,27 +11,36 @@ defaults:
   - _self_
 
 trainer:
-  total_frames: 500_000
+  total_frames: 5000_000
   seed: 42
-  accelerator: gpu
+  accelerator: cpu
   devices: [0]
   num_envs: 16
 
 algorithm:
-  frames_per_batch: 1_000
-  init_random_frames: 10_000
-  updates_per_step: 10
+  # 16 envs × ~64 env-steps per collector iter ≈ 1024 transitions/batch.
+  frames_per_batch: 1_024
+  init_random_frames: 20_000
+  # Replay ratio ≈ 1 (1024 grad samples per 1024 env transitions).
+  # High ratios (the previous 25×) compound Q-value overestimation fast.
+  updates_per_step: 4
   replay_buffer:
     capacity: 100_000
     batch_size: 256
     storage: tensor
-  lr: 1e-4
+  lr: 2.5e-4
   gamma: 0.99
-  max_grad_norm: 0.5
-  tau: 0.001
-  eps_annealing_frames: 50_000
+  # Real clipping; 1e9 was a no-op and let TD spikes drive divergence.
+  max_grad_norm: 10.0
+  # Faster soft update keeps the target network near the online net
+  # now that grads actually move the weights.
+  tau: 0.005
+  eps_annealing_frames: 100_000
   eps_end: 0.05
   network:
     architecture: mlp
     hidden_sizes: [128, 128]
     activation: relu
+    # LayerNorm stabilises TD learning under parallel collection
+    # (Gallici et al. 2024, "Simplifying Deep TD Learning" / PQN).
+    layer_norm: true

@@ -27,6 +27,7 @@ def _train(cfg: DictConfig) -> dict[str, float]:
         dict of final training metrics
     """
     from hydra.utils import get_class
+    from omegaconf import OmegaConf
 
     from src.environments.environment import Environment
     from src.utils.instantiate import build_callbacks, build_loggers
@@ -35,10 +36,14 @@ def _train(cfg: DictConfig) -> dict[str, float]:
     seed_everything(int(cfg.trainer.seed))
 
     # Build components
-    environment = Environment(cfg.environment)
+    env_kwargs = {k: v for k, v in OmegaConf.to_container(cfg.environment, resolve=True).items()
+                  if k != "_target_"}
+    environment = Environment(**env_kwargs)
 
     AlgClass = get_class(cfg.algorithm._target_)
-    algorithm = AlgClass(cfg=cfg, device=None)  # Trainer sets device
+    alg_kwargs = {k: v for k, v in OmegaConf.to_container(cfg.algorithm, resolve=True).items()
+                  if k != "_target_"}
+    algorithm = AlgClass(cfg=cfg, device=None, **alg_kwargs)  # Trainer sets device
 
     loggers = build_loggers(cfg.logger)
 

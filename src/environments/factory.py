@@ -14,8 +14,6 @@ from functools import partial
 from typing import Sequence
 
 
-
-
 def make_env(
     name: str,
     backend: str,
@@ -153,82 +151,26 @@ def _make_gymnasium_env(
     return base_env
 
 
-def _unsqueeze_signals(td):
-    """Ensure reward/done signals have a trailing singleton dim.
+def _patch_envpool_reset_mask(env):
+    """Squeeze a trailing singleton from the ``_reset`` mask before envpool sees it.
 
-    EnvPool produces shape ``[N]`` but torchrl losses expect ``[N, 1]``.
+    Once we unsqueeze done to ``[num_envs, 1]`` (see ``_make_envpool_env``),
+    torchrl's ``maybe_reset`` forwards ``_reset`` with the same trailing
+    dim, but envpool's ``_reset`` does ``self.obs[reset_workers]`` where
+    ``self.obs`` has shape ``[num_envs]`` — so a ``[N, 1]`` mask raises
+    ``IndexError``. Squeezing it keeps both sides happy.
     """
-    for key in ["reward", "done", "terminated", "truncated"]:
-        t = td.get(key, None)
-        if t is not None and t.dim() >= 1 and t.shape[-1] != 1:
-            td.set(key, t.unsqueeze(-1))
-    next_td = td.get("next", None)
-    if next_td is not None:
-        _unsqueeze_signals(next_td)
-    return td
+    _orig = env._reset
 
+    def _reset(td, **kwargs):
+        if td is not None:
+            r = td.get("_reset", None)
+            if r is not None and r.ndim > 1 and r.shape[-1] == 1:
+                td = td.clone(False)
+                td.set("_reset", r.squeeze(-1))
+        return _orig(td, **kwargs)
 
-def _patch_envpool_shapes(env, num_envs: int, max_episode_steps: int | None = None):
-    """Patch an envpool env: fix signal shapes and split done → terminated/truncated.
-
-    envpool auto-resets on done and collapses terminated with truncated (both
-    equal to done). DQN needs them distinct to correctly bootstrap from
-    time-limit truncations; otherwise it learns Q-values as if the episode
-    truly ended at the time limit. When ``max_episode_steps`` is provided, we
-    track per-env step counts and derive ``terminated = done AND step_count <
-    max_episode_steps`` (a done at the step limit is a truncation, not a real
-    termination).
-    """
-    import torch as _torch
-
-    step_counters = (
-        _torch.zeros(num_envs, dtype=_torch.long)
-        if max_episode_steps is not None
-        else None
-    )
-
-    def _split_done(next_td):
-        if step_counters is None:
-            return
-        done = next_td.get("done", None)
-        if done is None:
-            return
-        step_counters.add_(1)
-        done_cpu = done.view(-1).bool().cpu()
-        trunc = done_cpu & (step_counters >= max_episode_steps)
-        term = done_cpu & ~trunc
-        next_td.set(
-            "terminated",
-            term.view_as(done.cpu()).to(device=done.device, dtype=done.dtype),
-        )
-        next_td.set(
-            "truncated",
-            trunc.view_as(done.cpu()).to(device=done.device, dtype=done.dtype),
-        )
-        step_counters[done_cpu] = 0
-
-    orig_step = env.step
-
-    def patched_step(td, **kwargs):
-        result = orig_step(td, **kwargs)
-        _unsqueeze_signals(result)
-        next_td = result.get("next", None)
-        if next_td is not None:
-            _split_done(next_td)
-        return result
-
-    env.step = patched_step
-
-    orig_reset = env.reset
-
-    def patched_reset(td=None, **kwargs):
-        result = orig_reset(td, **kwargs)
-        _unsqueeze_signals(result)
-        if step_counters is not None:
-            step_counters.zero_()
-        return result
-
-    env.reset = patched_reset
+    env._reset = _reset
     return env
 
 
@@ -240,25 +182,54 @@ def _make_envpool_env(
     device: str,
     max_episode_steps: int | None = None,
 ):
-    from torchrl.envs import MultiThreadedEnv, TransformedEnv
-    from torchrl.envs.transforms import Compose, RewardClipping
+    """envpool-backed vectorised env via torchrl's ``MultiThreadedEnv``.
 
-    env = _patch_envpool_shapes(
-        MultiThreadedEnv(num_workers=num_envs, env_name=name),
-        num_envs=num_envs,
-        max_episode_steps=max_episode_steps,
+    Two non-obvious details:
+
+    * ``MultiThreadedEnvWrapper._get_action_spec`` hardcodes
+      ``categorical_action_encoding=True``, so actions are scalar ints as the
+      rest of the pipeline expects — no config knob needed.
+    * Reward/done/terminated/truncated are emitted with shape ``[num_envs]``
+      rather than torchrl's standard ``[num_envs, 1]``. Without the trailing
+      singleton, ``DQNLoss`` raises ``"All input tensors (value, reward and
+      done states) must share a unique shape"``. We fix this with an
+      ``UnsqueezeTransform`` on those keys, plus a tiny patch to the base
+      env's ``_reset`` so the now-2D ``_reset`` mask gets squeezed back to 1D
+      before indexing envpool's internal obs buffer.
+    """
+    from torchrl.envs import MultiThreadedEnv, TransformedEnv
+    from torchrl.envs.transforms import (
+        Compose,
+        ObservationNorm,
+        RewardClipping,
+        UnsqueezeTransform,
     )
 
-    transforms = []
+    env = _patch_envpool_reset_mask(
+        MultiThreadedEnv(
+            num_workers=num_envs,
+            env_name=name,
+            device=device,
+        )
+    )
+
+    # StepCounter is omitted here: its internal step_count is 1D while the
+    # unsqueeze makes the _reset mask 2D, and it can't expand across them.
+    # Last-episode logging reads "next.done" directly, so nothing depends on
+    # step_count for this env path.
+    transforms: list = [
+        UnsqueezeTransform(
+            dim=-1,
+            in_keys=["reward", "done", "terminated", "truncated"],
+            in_keys_inv=[],
+        ),
+    ]
     if clip_rewards:
         transforms.append(RewardClipping(-1.0, 1.0))
     if normalize_obs:
-        from torchrl.envs.transforms import ObservationNorm
         transforms.append(ObservationNorm(in_keys=["observation"]))
 
-    if transforms:
-        return TransformedEnv(env, Compose(*transforms))
-    return env
+    return TransformedEnv(env, Compose(*transforms))
 
 
 def _make_dmcontrol_env(

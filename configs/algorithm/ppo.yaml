@@ -1,5 +1,5 @@
 _target_: src.algorithms.ppo.PPOAlgorithm
-# Default values and parameter descriptions: src/algorithms/ppo.py (PPOConfig)
+# Default values and parameter descriptions: src/algorithms/ppo.py (PPOAlgorithm.__init__)
 
 # Data collection
 frames_per_batch: 2_048
