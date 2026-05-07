@@ -217,7 +217,9 @@ python src/train.py experiment=dqn/cartpole algorithm.lr=1e-3 trainer.total_fram
 
 ## Logging
 
-Pass a list of loggers — any combination of `wandb` and `tensorboard`:
+Defaults: plain CLI runs log to **tensorboard**; runs launched via
+`experiment=...` log to **wandb**. Override with any combination of `wandb` and
+`tensorboard`:
 
 ```shell
 python src/train.py experiment=dqn/cartpole 'logger=[wandb,tensorboard]'

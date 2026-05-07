@@ -3,12 +3,10 @@ defaults:
   - paths: default
   - algorithm: ???
   - environment: ???
-  - logger: []
+  - logger: tensorboard
   - experiment: null
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
-
-logger: []
 
 trainer:
   _target_: src.trainers.StepTrainer   # or src.trainers.EpisodeTrainer

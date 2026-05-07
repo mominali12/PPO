@@ -231,6 +231,6 @@ tests/
 ```shell
 python src/train.py experiment=dqn/cartpole
 python src/train.py experiment=dqn/cartpole algorithm.lr=1e-3
-python src/train.py experiment=dqn/cartpole 'logger=[wandb]'
+python src/train.py experiment=dqn/cartpole 'logger=[wandb]'  # experiments default to wandb; plain CLI defaults to tensorboard
 pytest tests/test_smoke.py -v
 ```

@@ -6,7 +6,7 @@
 defaults:
   - override /algorithm: dqn
   - override /environment: cartpole
-  - override /logger: []
+  - override /logger: wandb
   - _self_
 
 trainer:
