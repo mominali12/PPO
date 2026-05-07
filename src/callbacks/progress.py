@@ -27,7 +27,7 @@ class ProgressCallback:
         self._last_step = 0
 
     # Keys that represent mean episode reward across algorithms
-    _REWARD_KEYS = ("reward/last",)
+    _REWARD_KEYS = ("train/episode_reward",)
 
     def on_step_end(self, metrics: dict[str, float], step: int) -> None:
         if self._bar is None:

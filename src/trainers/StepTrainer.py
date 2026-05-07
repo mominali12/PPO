@@ -6,10 +6,21 @@ Each iteration:  collector yields one batch of transitions
 
 The trainer owns the loop, the collector and the callbacks; everything that
 affects learning lives in the algorithm.
+
+Per-iteration metrics emitted on logging boundaries mirror the torchrl SOTA
+DQN reference (sota-implementations/dqn/dqn_cartpole.py):
+  - ``train/episode_reward``, ``train/episode_length``: mean over episodes
+    that completed inside the batch.
+  - ``train/q_values``: mean Q-value of the actions actually executed.
+  - ``time/collect``, ``time/step``, ``time/speed``: collector wait, in-step
+    optimisation time, and frames/second for the iteration.
 """
 from __future__ import annotations
 
-from src.algorithms.utils import last_episode_return
+import time
+
+from tensordict import TensorDict
+
 from src.trainers.BaseTrainer import BaseTrainer, TrainerEvent, fire_callbacks
 
 
@@ -37,14 +48,30 @@ class StepTrainer(BaseTrainer):
         log_every = int(self.trainer_cfg.log_every_n_steps)
         metrics: dict[str, float] = {}
 
-        for batch in self.collector:
+        collector_iter = iter(self.collector)
+        while True:
+            collect_start = time.perf_counter()
+            try:
+                batch = next(collector_iter)
+            except StopIteration:
+                break
+            collect_time = time.perf_counter() - collect_start
+
             batch_frames = batch.numel()
             self._step += batch_frames
 
+            step_start = time.perf_counter()
             metrics = self.algorithm.step(batch)
+            step_time = time.perf_counter() - step_start
 
             if self._should_log(log_every, batch_frames):
-                metrics["reward/last"] = last_episode_return(batch)
+                metrics.update(_batch_metrics(batch))
+                total_time = collect_time + step_time
+                metrics["time/collect"] = collect_time
+                metrics["time/step"] = step_time
+                metrics["time/speed"] = (
+                    batch_frames / total_time if total_time > 0 else 0.0
+                )
                 fire_callbacks(
                     TrainerEvent.ON_STEP_END,
                     self.callbacks,
@@ -53,3 +80,38 @@ class StepTrainer(BaseTrainer):
                 )
 
         return metrics
+
+
+def _batch_metrics(batch: TensorDict) -> dict[str, float]:
+    """Per-batch training metrics that mirror the torchrl SOTA DQN reference.
+
+    Each metric is emitted only when the underlying TensorDict key is present:
+    ``RewardSum`` for ``episode_reward``, ``StepCounter`` for ``step_count``,
+    and a ``QValueActor``-style policy for ``action_value`` / ``action``.
+    """
+    flat = batch.reshape(-1)
+    out: dict[str, float] = {}
+
+    done = flat.get(("next", "done"), default=None)
+    if done is not None and done.bool().any():
+        mask = done.bool()
+        episode_rewards = flat.get(("next", "episode_reward"), default=None)
+        if episode_rewards is not None:
+            out["train/episode_reward"] = (
+                episode_rewards[mask].float().mean().item()
+            )
+        episode_lengths = flat.get(("next", "step_count"), default=None)
+        if episode_lengths is not None:
+            out["train/episode_length"] = (
+                episode_lengths[mask].float().mean().item()
+            )
+
+    # Q-value of the action actually executed (one-hot * action_value, summed).
+    action_value = flat.get("action_value", default=None)
+    action = flat.get("action", default=None)
+    if action_value is not None and action is not None:
+        out["train/q_values"] = (
+            (action_value * action).sum().item() / flat.numel()
+        )
+
+    return out

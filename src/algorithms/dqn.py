@@ -162,7 +162,7 @@ class DQNAlgorithm(BaseAlgorithm):
 
         # Warm-up: collect random transitions before any gradient update.
         if self._collected_frames < self.init_random_frames:
-            return {"epsilon": float(self.greedy_module.eps)}
+            return {"train/epsilon": float(self.greedy_module.eps)}
 
         losses = torch.zeros(self.num_updates, device=self.device)
         for j in range(self.num_updates):
@@ -177,8 +177,8 @@ class DQNAlgorithm(BaseAlgorithm):
             losses[j] = loss.detach()
 
         return {
-            "loss/td": losses.mean().item(),
-            "epsilon": float(self.greedy_module.eps),
+            "train/q_loss": losses.mean().item(),
+            "train/epsilon": float(self.greedy_module.eps),
         }
 
     # ------------------------------------------------------------------

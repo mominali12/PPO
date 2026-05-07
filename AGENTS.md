@@ -102,7 +102,7 @@ def step(self, batch: TensorDict) -> dict[str, float]:
 
     # 2. Warm-up gate
     if self._collected_frames < self.init_random_frames:
-        return {"epsilon": float(self.greedy_module.eps)}
+        return {"train/epsilon": float(self.greedy_module.eps)}
 
     # 3. Optimisation loop — sample, loss, backward, optimiser, target update
     for j in range(self.num_updates):
@@ -114,11 +114,16 @@ def step(self, batch: TensorDict) -> dict[str, float]:
         self.optimizer.step()
         self.target_updater.step()
 
-    return {"loss/td": ..., "epsilon": ...}
+    return {"train/q_loss": ..., "train/epsilon": ...}
 ```
 
 The trainer never touches the replay buffer, target network or epsilon — those are
-algorithm internals.
+algorithm internals. Per-batch metrics (`train/episode_reward`,
+`train/episode_length`, `train/q_values`) and timing (`time/collect`,
+`time/step`, `time/speed`) are computed by `StepTrainer` from the collector
+batch and merged into the algorithm's metrics dict at logging boundaries.
+This mirrors the torchrl SOTA DQN reference and keeps batch-level bookkeeping
+out of the algorithm.
 
 ## Instantiation in `src/train.py` / `src/eval.py`
 
@@ -149,13 +154,16 @@ constructor defaults.
 - `name`: gymnasium env id (e.g. `"CartPole-v1"`).
 - `transforms`: list of `_target_`-keyed dicts, each instantiated as a
   `torchrl.envs.transforms` object and composed on top of the base env.
-  Always include `StepCounter` explicitly.
+  Always include `StepCounter` explicitly. Add `RewardSum` if you want
+  `train/episode_reward` in the trainer metrics — it populates the
+  `("next", "episode_reward")` key the trainer reads.
 
 ```yaml
 # configs/environment/cartpole.yaml
 name: CartPole-v1
 transforms:
   - _target_: torchrl.envs.transforms.StepCounter
+  - _target_: torchrl.envs.transforms.RewardSum
 ```
 
 The factory in `src/environments/factory.py` supports gymnasium only.
@@ -182,7 +190,6 @@ src/
   algorithms/
     base.py                 — BaseAlgorithm ABC; TrainingState and CollectorConfig dataclasses
     dqn.py                  — DQNAlgorithm; replay/network factories (defaults + setup contract)
-    utils.py                — last_episode_return helper
   environments/
     environment.py          — Environment wrapper (holds factory kwargs, exposes make_env)
     factory.py              — make_env: gymnasium + transforms list

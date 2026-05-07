@@ -76,7 +76,7 @@ def step(self, batch: TensorDict) -> dict[str, float]:
     # 1. Always: anneal exploration + store transitions
     # 2. Skip during warm-up
     # 3. Loop num_updates: sample -> loss -> backward -> optimiser -> target update
-    return {"loss/td": ..., "epsilon": ...}
+    return {"train/q_loss": ..., "train/epsilon": ...}
 ```
 
 The trainer calls `step(batch)` with a TensorDict from `Collector`. The trainer never
