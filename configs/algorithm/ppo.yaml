@@ -1,0 +1,36 @@
+_target_: src.algorithms.ppo.PPO
+
+obs_key: observation
+
+actor_network:
+  _partial_: true
+  _target_: src.networks.make_mlp_ppo_actor
+  num_cells: [64, 64]
+  activation_class:
+    _target_: hydra.utils.get_class
+    path: torch.nn.Tanh
+
+critic_network:
+  _partial_: true
+  _target_: src.networks.make_mlp_ppo_critic
+  num_cells: [64, 64]
+  activation_class:
+    _target_: hydra.utils.get_class
+    path: torch.nn.Tanh
+
+lr: 2.5e-4
+gamma: 0.99
+gae_lambda: 0.95
+num_epochs: 4
+num_minibatches: 4
+clip_coef: 0.2
+clip_vloss: true
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+norm_adv: true
+anneal_lr: true
+target_kl: null
+frames_per_batch: 512
+max_frames_per_traj: -1
+total_frames: ${trainer.total_frames}

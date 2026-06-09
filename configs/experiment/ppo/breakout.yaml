@@ -1,0 +1,20 @@
+# @package _global_
+# PPO on ALE/Breakout-v5 with pixel observations and CNN actor/critic heads.
+defaults:
+  - override /algorithm: ppo_atari
+  - override /environment: breakout_train
+  - override /environment@eval_environment: breakout_eval
+  - override /logger: wandb
+  - _self_
+
+trainer:
+  total_frames: 10_000_000
+  seed: 42
+  accelerator: gpu
+  devices: [0]
+  num_envs: 8
+  log_every_n_steps: 10_000
+
+algorithm:
+  frames_per_batch: 2048
+  total_frames: ${trainer.total_frames}

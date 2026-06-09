@@ -3,3 +3,6 @@ name: CartPole-v1
 transforms:
   - _target_: torchrl.envs.transforms.StepCounter
   - _target_: torchrl.envs.transforms.RewardSum
+
+gym_kwargs:
+  categorical_action_encoding: true

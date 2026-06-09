@@ -15,6 +15,8 @@ Implemented experiments:
 | DQN       | ALE/Pong-v5    | `experiment=dqn/pong`         |
 | DDPG      | HalfCheetah-v4 | `experiment=ddpg/halfcheetah` |
 | A2C       | HalfCheetah-v4 | `experiment=a2c/halfcheetah`  |
+| PPO       | CartPole-v1    | `experiment=ppo/cartpole`     |
+| PPO       | ALE/Breakout-v5| `experiment=ppo/breakout`     |
 
 Other algorithms will follow.
 
@@ -103,6 +105,14 @@ Rules:
     - `make_mlp_a2c_value(obs_shape, action_dim, *, num_cells, activation_class)` —
       state-value (V(s)) critic; `action_dim` is unused but kept for signature
       parity with the actor factory.
+    - `make_mlp_ppo_actor(obs_shape, num_actions, *, num_cells, activation_class)` —
+      MLP categorical-policy logits head for PPO on vector observations.
+    - `make_mlp_ppo_critic(obs_shape, num_actions, *, num_cells, activation_class)` —
+      MLP state-value critic for PPO; `num_actions` is unused but kept for
+      signature parity.
+    - `NaturePPOActor(obs_shape, num_actions, *, ...)` and
+      `NaturePPOCritic(obs_shape, num_actions, *, ...)` — Nature-DQN-style CNN
+      policy/value heads for PPO on stacked Atari frames.
   All keep everything after the two positional args **kwarg-only**, so a Hydra
   `_partial_` config can pre-bind kwargs without colliding with `setup()`'s call.
 - `obs_key` selects which tensordict key the observation comes from. Vector
@@ -279,12 +289,15 @@ src/
   eval.py                   — evaluation entry point; same algorithm instantiation
   networks.py               — network factories: make_mlp_q_net, NatureDQN,
                               make_mlp_ddpg_actor, make_mlp_ddpg_critic,
-                              make_mlp_a2c_actor, make_mlp_a2c_value
+                              make_mlp_a2c_actor, make_mlp_a2c_value,
+                              make_mlp_ppo_actor, make_mlp_ppo_critic,
+                              NaturePPOActor, NaturePPOCritic
   algorithms/
     base.py                 — BaseAlgorithm ABC; TrainingState and CollectorConfig dataclasses
     dqn.py                  — DQNAlgorithm; replay/network factories (defaults + setup contract)
     ddpg.py                 — DDPGAlgorithm; actor/critic/replay/noise factories
     a2c.py                  — A2CAlgorithm; on-policy actor/critic with GAE + A2CLoss
+    ppo.py                  — PPO; manual clipped surrogate update with GAE
   environments/
     environment.py          — Environment wrapper (holds factory kwargs, exposes make_env)
     factory.py              — make_env: gymnasium + transforms list + gym_kwargs/gym_backend
@@ -298,19 +311,25 @@ configs/
   algorithm/dqn_atari.yaml  — DQN HPs (Atari/NatureDQN defaults; pixel obs)
   algorithm/ddpg.yaml       — DDPG HPs (HalfCheetah defaults); _partial_ actor/critic/noise
   algorithm/a2c.yaml        — A2C HPs (HalfCheetah/MuJoCo defaults); _partial_ actor/value
+  algorithm/ppo.yaml        — PPO HPs (CartPole defaults); _partial_ actor/critic
+  algorithm/ppo_atari.yaml  — PPO HPs (Atari/NatureCNN defaults; pixel obs)
   environment/cartpole.yaml — env kwargs (name, transforms)
   environment/pong_train.yaml — Atari Pong env (training transforms incl. EndOfLife + Sign + VecNorm)
   environment/pong_eval.yaml  — Atari Pong env (eval transforms; drops EndOfLife + Sign + VecNorm)
+  environment/breakout_train.yaml — Atari Breakout env (training transforms incl. EndOfLife + Sign)
+  environment/breakout_eval.yaml  — Atari Breakout env (eval transforms; drops EndOfLife + Sign)
   environment/halfcheetah.yaml — HalfCheetah-v4 (DoubleToFloat + InitTracker)
   experiment/dqn/cartpole.yaml — composed CartPole experiment
   experiment/dqn/pong.yaml     — composed Atari Pong experiment
   experiment/ddpg/halfcheetah.yaml — composed DDPG HalfCheetah experiment
   experiment/a2c/halfcheetah.yaml — composed A2C HalfCheetah experiment
+  experiment/ppo/cartpole.yaml — composed PPO CartPole experiment
+  experiment/ppo/breakout.yaml — composed PPO Atari Breakout experiment
   logger/{wandb,tensorboard}.yaml
   paths/default.yaml
   train.yaml, eval.yaml
 tests/
-  test_smoke.py             — DQN-on-CartPole, DQN-on-Pong, DDPG-on-HalfCheetah, A2C-on-HalfCheetah smoke tests
+  test_smoke.py             — DQN, DDPG, A2C, and PPO smoke tests
 ```
 
 ## Adding a new algorithm
@@ -346,5 +365,7 @@ python src/train.py experiment=dqn/cartpole 'logger=[wandb]'  # experiments defa
 python src/train.py experiment=dqn/pong            # Atari Pong (40M frames, GPU)
 python src/train.py experiment=ddpg/halfcheetah    # DDPG continuous control (1M frames)
 python src/train.py experiment=a2c/halfcheetah     # A2C on-policy continuous control (1M frames)
+python src/train.py experiment=ppo/cartpole        # PPO on CartPole (25k frames)
+python src/train.py experiment=ppo/breakout        # PPO on Atari Breakout (GPU)
 pytest tests/test_smoke.py -v
 ```

@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - override /algorithm: ppo
+  - override /environment: cartpole
+  - override /logger: wandb
+  - _self_
+
+trainer:
+  total_frames: 25_000
+  num_envs: 4
+  log_every_n_steps: 512
+
+algorithm:
+  frames_per_batch: 512
+  total_frames: ${trainer.total_frames}

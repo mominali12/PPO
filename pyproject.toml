@@ -23,6 +23,8 @@ dependencies = [
     # Testing
     "pytest>=8.0.0",
     "pytest-timeout>=2.3.0",
+    "ale-py>=0.12.0",
+    "torchvision>=0.26.0",
 ]
 
 [build-system]

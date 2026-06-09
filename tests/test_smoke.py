@@ -39,6 +39,53 @@ def _dqn_overrides() -> list[str]:
         "algorithm.annealing_frames=600",
     ]
 
+def _ppo_overrides() -> list[str]:
+    return [
+        *BASE_OVERRIDES,
+        "trainer.total_frames=1024",
+        "trainer.num_envs=4",
+        "trainer.log_every_n_steps=256",
+        "algorithm.frames_per_batch=256",
+        "algorithm.total_frames=1024",
+        "algorithm.num_epochs=2",
+        "algorithm.num_minibatches=4",
+    ]
+
+def test_smoke_ppo_cartpole():
+    cfg = load_experiment_cfg("ppo/cartpole", _ppo_overrides())
+    from src.train import _train
+
+    metrics = _train(cfg)
+    assert isinstance(metrics, dict)
+    assert len(metrics) > 0
+
+
+def _ppo_breakout_overrides() -> list[str]:
+    # Tiny pixel-observation PPO run: just enough to verify CNN actor/critic,
+    # categorical Atari actions, GAE, and the manual PPO minibatch path.
+    return [
+        *BASE_OVERRIDES,
+        "trainer.total_frames=128",
+        "trainer.num_envs=1",
+        "trainer.log_every_n_steps=64",
+        "trainer.accelerator=cpu",
+        "algorithm.frames_per_batch=64",
+        "algorithm.total_frames=128",
+        "algorithm.num_epochs=1",
+        "algorithm.num_minibatches=2",
+    ]
+
+
+def test_smoke_ppo_breakout():
+    """PPO on ALE/Breakout-v5: pixel obs, CNN actor/critic, categorical actions."""
+    pytest.importorskip("ale_py")  # ALE is an optional system dep
+    cfg = load_experiment_cfg("ppo/breakout", _ppo_breakout_overrides())
+    from src.train import _train
+
+    metrics = _train(cfg)
+    assert isinstance(metrics, dict)
+    assert len(metrics) > 0
+
 
 def test_smoke_dqn_cartpole():
     """DQN on CartPole-v1: discrete actions, MLP Q-network, replay buffer."""

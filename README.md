@@ -40,6 +40,8 @@ Two derived rules:
 | DQN       | ALE/Pong-v5    | `experiment=dqn/pong`           |
 | DDPG      | HalfCheetah-v4 | `experiment=ddpg/halfcheetah`   |
 | A2C       | HalfCheetah-v4 | `experiment=a2c/halfcheetah`    |
+| PPO       | CartPole-v1    | `experiment=ppo/cartpole`       |
+| PPO       | ALE/Breakout-v5| `experiment=ppo/breakout`       |
 
 Other algorithms will follow.
 
@@ -267,8 +269,11 @@ configs/
     │   └── pong.yaml       <- composed Atari Pong experiment
     ├── ddpg/
     │   └── halfcheetah.yaml <- composed DDPG HalfCheetah experiment
-    └── a2c/
-        └── halfcheetah.yaml <- composed A2C HalfCheetah experiment
+    ├── a2c/
+    │   └── halfcheetah.yaml <- composed A2C HalfCheetah experiment
+    └── ppo/
+        ├── cartpole.yaml    <- composed PPO CartPole experiment
+        └── breakout.yaml    <- composed PPO Atari Breakout experiment
 ```
 
 ### Override hierarchy
