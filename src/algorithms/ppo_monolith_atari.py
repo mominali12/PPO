@@ -31,6 +31,7 @@ from part one of the video Blog Post and the ones of part two specific to Atari 
 import argparse
 import os
 import time
+from pathlib import Path
 import numpy as np
 import random
 import glob
@@ -87,6 +88,20 @@ def layer_init(layer, std = np.sqrt(2), bias_const = 0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+
+def save_checkpoint(path, agent, optimizer, global_step, args):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model": agent.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "global_step": global_step,
+            "args": vars(args),
+        },
+        path,
+    )
+
 class Agent(nn.Module):
     """
     Implementation Detail [8]: Shared conv. layers for actor and critic with distinct linear heads.
@@ -138,6 +153,10 @@ def parse_args():
     parser.add_argument('--wandb-entity',type=str,default=None,help='the entity (team) of wandbs project')
     parser.add_argument('--capture-video',type=lambda x:bool(strtobool(x)), default=False,
                         nargs='?',const=True,help='if video shall be recorded.')
+    parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
+                        help='directory for model checkpoints')
+    parser.add_argument('--save-every', type=int, default=1_000_000,
+                        help='save a checkpoint every N environment steps; set 0 to disable periodic checkpoints')
 
     # Algorithm specific args
     parser.add_argument('--n-envs',type=int,default=8, help='number of environments')
@@ -163,6 +182,7 @@ def parse_args():
 if __name__=="__main__":
     args = parse_args()
     run_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    checkpoint_name = run_name.replace("/", "_")
     if args.track:
         import wandb
 
@@ -333,7 +353,7 @@ if __name__=="__main__":
                         # calculate approx kullback leiber
                         old_approx_kl = (-logratio).mean()
                         approx_kl = ((ratio -1)-logratio).mean()
-                        clipfracs += [((ratio -1.0).abs() > args.clip_coef).float().mean()]
+                        clipfracs += [((ratio -1.0).abs() > args.clip_coef).float().mean().detach().cpu().item()]
 
                     # Implementation detail [7]: advantage normalization
                     mb_advantages = b_advantages[mb_inds]
@@ -398,7 +418,24 @@ if __name__=="__main__":
                     step=global_step,
                 )
 
+            if args.save_every > 0 and global_step % args.save_every < args.batch_size:
+                save_checkpoint(
+                    Path(args.checkpoint_dir) / f"{checkpoint_name}_{global_step}.pt",
+                    agent,
+                    optimizer,
+                    global_step,
+                    args,
+                )
+
     envs.close()
+
+    save_checkpoint(
+        Path(args.checkpoint_dir) / f"{checkpoint_name}_final.pt",
+        agent,
+        optimizer,
+        global_step,
+        args,
+    )
 
     if args.track and args.capture_video:
         for video_path in glob.glob(f"videos/*.mp4"):
