@@ -16,5 +16,5 @@ trainer:
   log_every_n_steps: 10_000
 
 algorithm:
-  frames_per_batch: 2048
+  frames_per_batch: 1024
   total_frames: ${trainer.total_frames}
