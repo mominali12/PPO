@@ -22,6 +22,7 @@ def make_env(
     device: str = "cpu",
     transforms: list | None = None,
     gym_kwargs: dict | None = None,
+    gym_wrappers: list | None = None,
     gym_backend: str | None = None,
     **_: object,
 ):
@@ -37,6 +38,7 @@ def make_env(
             base env. ``None`` or empty -> bare base env.
         gym_kwargs: extra kwargs passed straight to ``GymEnv`` (e.g.
             ``{"frame_skip": 4, "from_pixels": True}``).
+        gym_wrappers: optional gym wrappers
         gym_backend: optional gym backend name for ``set_gym_backend``
             (e.g. ``"gymnasium"``); if ``None`` torchrl picks the default.
     """
@@ -48,6 +50,7 @@ def make_env(
         transforms=transforms,
         device=worker_device,
         gym_kwargs=gym_kwargs,
+        gym_wrappers=gym_wrappers,
         gym_backend=gym_backend,
     )
 
@@ -57,6 +60,13 @@ def make_env(
         return ParallelEnv(num_envs, env_fn, mp_start_method="spawn")
     return env_fn()
 
+def _instantiate_gym_wrapper(env, cfg: dict):
+    """Instantiate a Gymnasium wrapper around an existing env."""
+    cfg = dict(cfg)
+    target = cfg.pop("_target_")
+    module_path, class_name = target.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_path), class_name)
+    return cls(env, **cfg)
 
 def _instantiate_transform(cfg: dict):
     """Instantiate a transform from a ``_target_``-keyed dict (no Hydra runtime)."""
@@ -72,9 +82,10 @@ def _make_gymnasium_env(
     transforms: list | None,
     device: str,
     gym_kwargs: dict | None = None,
+    gym_wrappers: list | None = None,
     gym_backend: str | None = None,
 ):
-    from torchrl.envs import GymEnv, TransformedEnv
+    from torchrl.envs import GymEnv, GymWrapper, TransformedEnv
     from torchrl.envs.transforms import Compose
 
     backend_ctx = nullcontext()
@@ -83,7 +94,15 @@ def _make_gymnasium_env(
         backend_ctx = set_gym_backend(gym_backend)
 
     with backend_ctx:
-        base_env = GymEnv(name, device=device, **(gym_kwargs or {}))
+        if gym_wrappers:
+            import gymnasium as gym
+
+            raw_env = gym.make(name, **(gym_kwargs or {}))
+            for wrapper_cfg in gym_wrappers:
+                raw_env = _instantiate_gym_wrapper(raw_env, wrapper_cfg)
+            bese_env = GymWrapper(raw_env, device=device)
+        else:
+            base_env = GymEnv(name, device=device, **(gym_kwargs or {}))
 
     if not transforms:
         return base_env

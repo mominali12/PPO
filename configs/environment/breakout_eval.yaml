@@ -1,17 +1,21 @@
 name: ALE/Breakout-v5
 gym_backend: gymnasium
 gym_kwargs:
-  frame_skip: 4
-  from_pixels: true
-  pixels_only: false
+  render_modes: rgb_array
+  frame_skip: 1
+  repeat_action_probability: 0.0
   categorical_action_encoding: true
+
+gym_wrappers:
+  - _target_: stable_baselines3.common.atari_wrappers.NoopResetEnv
+    noop_max: 30
+  - _target_: stable_baselines3.common.atari_wrappers.MaxAndSkipEnv
+    skip: 4
+  - _target_: stable_baselines3.common.atari_wrappers.FireResetEnv
 
 # Eval variant: drops EndOfLifeTransform and reward clipping so scores reflect
 # real game episodes and rewards.
 transforms:
-  - _target_: torchrl.envs.NoopResetEnv
-    noops: 30
-    random: true
   - _target_: torchrl.envs.ToTensorImage
   - _target_: torchrl.envs.GrayScale
   - _target_: torchrl.envs.Resize
