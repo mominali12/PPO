@@ -67,6 +67,7 @@ class PPO(BaseAlgorithm):
         *,
         actor_network: Callable[[tuple[int, ...], int], nn.Module] | None = None,
         critic_network: Callable[[tuple[int, ...], int], nn.Module] | None = None,
+        actor_critic_network: Callable[[tuple[int, ...], int], tuple[nn.Module, nn.Module]] | None = None,
         obs_key: str = "observation",
         # ------ Hyperparameters -------
         lr: float = 2.5e-4,
@@ -98,6 +99,8 @@ class PPO(BaseAlgorithm):
             obs_key: Key for the observation tensor in the TensorDict.
         """
         super().__init__(device)
+
+        # ======= Used for e.g. Cartpole (mlp networks)=====
         # Default for the actor network
         if actor_network is None:
             self._actor_factory = functools.partial(make_mlp_ppo_actor, num_cells=[64,64],activation_class=nn.Tanh)
@@ -109,6 +112,9 @@ class PPO(BaseAlgorithm):
             self._critic_factory = functools.partial(make_mlp_ppo_critic, num_cells=[64,64],activation_class=nn.Tanh)
         else:
             self._critic_factory = critic_network
+
+        # ======== Used for e.g. Atari Breakout (cnn networks)=====
+        self._actor_critic_factory = actor_critic_network
 
         # The key under which observations / for Atari Games e.g. Pixels are stored in TensorDicts or torchRL
         # environments, respectively.
@@ -164,7 +170,18 @@ class PPO(BaseAlgorithm):
         # outputs into another (out_keys).
 
         # .... Actor
-        actor_net: nn.Module = self._actor_factory(observation_shape, num_actions).to(self.device)
+        if self._actor_critic_factory is not None:
+            # Branch for CNN based Envs (atari)
+            actor_net, critic_net = self._actor_critic_factory(
+                observation_shape,
+                num_actions,
+            )
+            actor_net = actor_net.to(self.device)
+            critic_net = critic_net.to(self.device)
+        else:
+            # Branch for MLP based envs (e.g. cartpole)
+            actor_net: nn.Module = self._actor_factory(observation_shape, num_actions).to(self.device)
+            critic_net: nn.Module = self._critic_factory(observation_shape, num_actions).to(self.device)
 
         self.actor_module: TensorDictModule = TensorDictModule(
             actor_net,
@@ -191,7 +208,6 @@ class PPO(BaseAlgorithm):
         ).to(self.device)
 
         # .... Critic
-        critic_net: nn.Module = self._critic_factory(observation_shape,num_actions).to(self.device)
 
         # The TensorDict wrapper for a value function is given by ValueOperator. It reads observation and
         # writes the state value under the standard key "state_value" (needed by GAE and PPO losses)
@@ -227,11 +243,15 @@ class PPO(BaseAlgorithm):
         )
 
         # .... Optimizer
+        # Do not duplicate parameters for actor and critic (for CNN case they share some)
+        params = list({id(p): p for p in list(self.actor.parameters()) + list(self.critic.parameters())}.values())
+
         self.optimizer: torch.optim.Optimizer = torch.optim.Adam(
-            list(self.actor.parameters())+list(self.critic.parameters()), # extend actor parameters by critic parameters
+            params, # extend actor parameters by critic parameters
             lr=self.lr,
             # Implementation Detail [3]: the value of the eps-parameter for Adam.
             eps=1e-5,)
+        self._optim_params = params
 
 
 
@@ -378,7 +398,7 @@ class PPO(BaseAlgorithm):
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.critic.parameters()),
+                    self._optim_params,
                     self.max_grad_norm,
                 )
                 self.optimizer.step()
