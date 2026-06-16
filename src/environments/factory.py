@@ -23,6 +23,7 @@ def make_env(
     transforms: list | None = None,
     gym_kwargs: dict | None = None,
     gym_wrappers: list | None = None,
+    gym_info_keys: list[str] | None = None,
     gym_backend: str | None = None,
     **_: object,
 ):
@@ -51,6 +52,7 @@ def make_env(
         device=worker_device,
         gym_kwargs=gym_kwargs,
         gym_wrappers=gym_wrappers,
+        gym_info_keys=gym_info_keys,
         gym_backend=gym_backend,
     )
 
@@ -83,6 +85,7 @@ def _make_gymnasium_env(
     device: str,
     gym_kwargs: dict | None = None,
     gym_wrappers: list | None = None,
+    gym_info_keys: list[str] | None = None,
     gym_backend: str | None = None,
 ):
     from torchrl.envs import GymEnv, GymWrapper, TransformedEnv
@@ -113,8 +116,20 @@ def _make_gymnasium_env(
             for wrapper_cfg in gym_wrappers:
                 raw_env = _instantiate_gym_wrapper(raw_env, wrapper_cfg)
             base_env = GymWrapper(raw_env, device=device, categorical_action_encoding=categorical_action_encoding)
+            if gym_info_keys:
+                from torchrl.envs.gym_like import default_info_dict_reader
+
+                base_env.set_info_dict_reader(
+                    default_info_dict_reader(list(gym_info_keys))
+                )
         else:
             base_env = GymEnv(name, device=device, **(gym_kwargs or {}))
+            if gym_info_keys:
+                from torchrl.envs.gym_like import default_info_dict_reader
+
+                base_env.set_info_dict_reader(
+                    default_info_dict_reader(list(gym_info_keys))
+                )
 
     if not transforms:
         return base_env

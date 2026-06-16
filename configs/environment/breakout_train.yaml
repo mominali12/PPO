@@ -11,6 +11,7 @@ gym_wrappers: # Wrappers according to Atari Blogpost: 37 implementation details.
     noop_max: 30
   - _target_: stable_baselines3.common.atari_wrappers.MaxAndSkipEnv
     skip: 4
+  - _target_: src.environments.gym_wrappers.RawEpisodeStatistics
   - _target_: stable_baselines3.common.atari_wrappers.EpisodicLifeEnv # previously done by torchrl.envs.EndOfLifeTransform
   - _target_: stable_baselines3.common.atari_wrappers.FireResetEnv
   - _target_: stable_baselines3.common.atari_wrappers.ClipRewardEnv # previously done by torchrl.envs.SignTransform
@@ -31,3 +32,8 @@ transforms:
   - _target_: torchrl.envs.StepCounter
     max_steps: 4500
   - _target_: torchrl.envs.DoubleToFloat
+
+gym_info_keys:
+  - raw_episode_return
+  - raw_episode_length
+  - raw_episode_done

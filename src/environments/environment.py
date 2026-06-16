@@ -30,6 +30,7 @@ class Environment:
         transforms: list | None = None,
         gym_kwargs: dict | None = None,
         gym_wrappers: list | None = None,
+        gym_info_keys: list[str] | None = None,
         gym_backend: str | None = None,
         **_: object,
     ) -> None:
@@ -37,6 +38,7 @@ class Environment:
             "name": name,
             "transforms": transforms,
             "gym_wrappers": gym_wrappers,
+            "gym_info_keys": gym_info_keys,
             "gym_kwargs": gym_kwargs,
             "gym_backend": gym_backend,
         }

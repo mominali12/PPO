@@ -92,6 +92,18 @@ def _batch_metrics(batch: TensorDict) -> dict[str, float]:
     flat = batch.reshape(-1)
     out: dict[str, float] = {}
 
+    raw_done = flat.get(("next", "raw_episode_done"), default=None)
+    if raw_done is not None and raw_done.bool().any():
+        mask = raw_done.bool()
+
+        raw_returns = flat.get(("next", "raw_episode_return"), default=None)
+        if raw_returns is not None:
+            out["train/raw_episodic_return"] = raw_returns[mask].float().mean().item()
+
+        raw_lengths = flat.get(("next", "raw_episode_length"), default=None)
+        if raw_lengths is not None:
+            out["train/raw_episodic_length"] = raw_lengths[mask].float().mean().item()
+
     done = flat.get(("next", "done"), default=None)
     if done is not None and done.bool().any():
         mask = done.bool()
