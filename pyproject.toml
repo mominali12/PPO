@@ -25,6 +25,13 @@ dependencies = [
     "pytest-timeout>=2.3.0",
     "ale-py>=0.12.0",
     "torchvision>=0.26.0",
+    "grad-cam==1.5.5",
+    "joblib==1.5.3",
+    "scikit-learn==1.7.2",
+    "scipy==1.15.3",
+    "threadpoolctl==3.6.0",
+    "ttach==0.0.3",
+    "stable-baselines3>=2.9.0",
 ]
 
 [build-system]
